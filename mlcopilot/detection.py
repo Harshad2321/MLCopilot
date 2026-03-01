@@ -3,6 +3,7 @@ MLCopilot Failure Detection
 Rule-based anomaly detection for training failures.
 """
 
+import logging
 import math
 from typing import List, Optional, Tuple
 import numpy as np
@@ -11,6 +12,8 @@ from .types import (
     MetricSnapshot, DetectionResult, AnomalyType, Severity,
     DetectionThresholds, calculate_confidence, determine_severity
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FailureDetector:
@@ -53,9 +56,16 @@ class FailureDetector:
         ]
         
         for detector in detectors:
-            result = detector(metrics, self.initial_loss, self.thresholds)
-            if result:
-                results.append(result)
+            try:
+                result = detector(metrics, self.initial_loss, self.thresholds)
+                if result:
+                    results.append(result)
+            except Exception as e:
+                logger.warning(
+                    f"Detector {detector.__name__} raised an unexpected error and was skipped: {e}",
+                    exc_info=True
+                )
+                continue
         
         # Sort by severity (critical first)
         severity_order = {
@@ -286,8 +296,11 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
             raw_values={
                 'grad_norm': current.grad_norm,
                 'threshold': thresholds.exploding_grad_threshold,
+                'high_lr_threshold': thresholds.high_lr_threshold,
                 'moving_average': avg_grad_norm,
                 'relative_threshold': relative_threshold,
+                'absolute_threshold_triggered': float(exceeds_threshold),
+                'relative_threshold_triggered': float(exceeds_average),
                 'average_log_growth': average_log_growth,
                 'log_growth_triggered': float(log_growth_triggered),
                 'regression_slope': reg_slope,
@@ -559,6 +572,7 @@ def detect_loss_divergence(metrics: List[MetricSnapshot],
                 'current_loss': current.loss,
                 'initial_loss': initial_loss,
                 'ratio': ratio,
+                'high_lr_threshold': thresholds.high_lr_threshold,
                 'old_logic_triggered': float(old_logic_triggered),
                 'regression_slope': slope,
                 'regression_r_squared': reg_r_squared,

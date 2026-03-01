@@ -23,6 +23,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
+from pydantic import BaseModel, field_validator
 
 from mlcopilot.types import MetricSnapshot, DetectionResult, Severity
 from mlcopilot.detection import FailureDetector
@@ -38,6 +39,25 @@ app = FastAPI(title="MLCopilot Backend")
 # Serve frontend
 WEBVIEW_DIR = Path(__file__).parent.parent / "webview"
 app.mount("/static", StaticFiles(directory=str(WEBVIEW_DIR)), name="static")
+
+# ============================================================================
+# Request Models
+# ============================================================================
+
+class SetLRRequest(BaseModel):
+    """Request body for setting learning rate."""
+    lr: float
+    
+    @field_validator('lr', mode='before')
+    @classmethod
+    def validate_lr(cls, v):
+        """Ensure learning rate is positive and finite."""
+        lr_val = float(v)
+        if not math.isfinite(lr_val):
+            raise ValueError('Learning rate must be a finite number')
+        if lr_val <= 0:
+            raise ValueError('Learning rate must be positive')
+        return lr_val
 
 # ============================================================================
 # Global State
@@ -57,6 +77,7 @@ class TrainingState:
         self.epoch = 0
         self.batch = 0
         self.ws_clients: List[WebSocket] = []
+        self.ws_lock: threading.Lock = threading.Lock()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     def reset(self):
@@ -119,13 +140,21 @@ def get_param_stats(model: nn.Module) -> Dict[str, float]:
 
 
 def get_model_info(model: nn.Module) -> Dict[str, Any]:
+    # Count only leaf modules (modules with no children)
+    num_layers = sum(1 for m in model.modules() if not list(m.children()))
+    has_sigmoid = any(isinstance(m, nn.Sigmoid) for m in model.modules())
+    has_tanh = any(isinstance(m, nn.Tanh) for m in model.modules())
+    
     return {
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "has_batchnorm": any(isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)) for m in model.modules()),
         "has_layernorm": any(isinstance(m, nn.LayerNorm) for m in model.modules()),
         "has_normalization": any(isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)) for m in model.modules()),
-        "num_layers": len(list(model.modules())),
+        "has_sigmoid": has_sigmoid,
+        "has_tanh": has_tanh,
+        "has_saturating_activations": has_sigmoid or has_tanh,
+        "num_layers": num_layers,
         "model_type": type(model).__name__,
     }
 
@@ -143,14 +172,23 @@ def get_optimizer_info(optimizer: optim.Optimizer, lr: float) -> Dict[str, Any]:
 async def broadcast(message: dict):
     """Send message to all connected WebSocket clients."""
     data = json.dumps(message)
+    
+    # Take a snapshot of clients under lock to avoid concurrent mutation
+    with state.ws_lock:
+        clients_snapshot = list(state.ws_clients)
+    
     disconnected = []
-    for ws in state.ws_clients:
+    for ws in clients_snapshot:
         try:
             await ws.send_text(data)
         except Exception:
             disconnected.append(ws)
+    
+    # Remove disconnected clients under lock
     for ws in disconnected:
-        state.ws_clients.remove(ws)
+        with state.ws_lock:
+            if ws in state.ws_clients:
+                state.ws_clients.remove(ws)
 
 
 def broadcast_from_thread(message: dict):
@@ -277,11 +315,13 @@ def run_training():
     except Exception as e:
         state.status = "error"
         broadcast_from_thread({"type": "status", "status": "error", "message": str(e)})
-        return
-
-    state.running = False
-    state.status = "stopped"
-    broadcast_from_thread({"type": "status", "status": "stopped"})
+    
+    finally:
+        state.running = False
+        # Only set status to stopped if training completed normally (not error)
+        if state.status != "error":
+            state.status = "stopped"
+            broadcast_from_thread({"type": "status", "status": "stopped"})
 
 
 # ============================================================================
@@ -312,13 +352,10 @@ async def stop_training():
 
 
 @app.post("/set_lr")
-async def set_learning_rate(body: dict):
-    lr = float(body.get("lr", state.learning_rate))
-    if lr <= 0:
-        return {"ok": False, "message": "LR must be positive"}
-    state.learning_rate = lr
-    broadcast_from_thread({"type": "lr_changed", "lr": lr})
-    return {"ok": True, "lr": lr}
+async def set_learning_rate(body: SetLRRequest):
+    state.learning_rate = body.lr
+    broadcast_from_thread({"type": "lr_changed", "lr": body.lr})
+    return {"ok": True, "lr": body.lr}
 
 
 @app.get("/status")
@@ -340,17 +377,24 @@ async def get_status():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    state.ws_clients.append(ws)
-    # Store the event loop for thread-safe broadcasting
-    state.loop = asyncio.get_event_loop()
+    
+    # Store the currently running event loop for thread-safe broadcasting
+    state.loop = asyncio.get_running_loop()
+    
+    # Add client to list under lock
+    with state.ws_lock:
+        state.ws_clients.append(ws)
+    
     try:
         while True:
             # Keep connection alive; client may send pings
             data = await ws.receive_text()
             # Could handle client messages here if needed
     except WebSocketDisconnect:
-        if ws in state.ws_clients:
-            state.ws_clients.remove(ws)
+        # Remove client from list under lock
+        with state.ws_lock:
+            if ws in state.ws_clients:
+                state.ws_clients.remove(ws)
 
 
 # ============================================================================

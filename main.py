@@ -3,6 +3,7 @@ MLCopilot Main Entry Point
 Provides convenient wrapper functions for integrating monitoring into training loops.
 """
 
+import logging
 from typing import Optional
 import torch.nn as nn
 import torch.optim as optim
@@ -14,6 +15,8 @@ from mlcopilot import (
     RecommendationEngine,
     CLIReporter
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MLCopilot:
@@ -100,12 +103,40 @@ class MLCopilot:
             model_info = self.monitor.get_model_info()
             optimizer_info = self.monitor.get_optimizer_info()
             
-            diagnosis = self.analyzer.analyze(detection, model_info, optimizer_info)
-            recommendations = self.recommender.generate(diagnosis)
+            # Try to analyze the detection
+            diagnosis = None
+            try:
+                diagnosis = self.analyzer.analyze(detection, model_info, optimizer_info)
+            except Exception as e:
+                logger.error(
+                    f"RootCauseAnalyzer.analyze failed: {e}",
+                    exc_info=True
+                )
             
-            # Report if auto-reporting enabled
+            # Try to generate recommendations
+            recommendations = []
+            if diagnosis is not None:
+                try:
+                    recommendations = self.recommender.generate(diagnosis)
+                except Exception as e:
+                    logger.error(
+                        f"RecommendationEngine.generate failed: {e}",
+                        exc_info=True
+                    )
+            
+            # Report if auto-reporting enabled and we have both diagnosis and recommendations
             if self.auto_report:
-                self.reporter.report_full(detection, diagnosis, recommendations)
+                if diagnosis is not None and recommendations:
+                    self.reporter.report_full(detection, diagnosis, recommendations)
+                elif diagnosis is not None:
+                    # Report diagnosis without recommendations
+                    self.reporter.report_full(detection, diagnosis, [])
+                else:
+                    # Report detection only (no diagnosis)
+                    logger.warning(
+                        f"Detection found but analysis failed. Issue type: {detection.anomaly_type}, "
+                        f"Confidence: {detection.confidence}"
+                    )
             
             self.issue_detected = True
             return True

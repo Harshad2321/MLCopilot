@@ -3,13 +3,17 @@ MLCopilot Training Monitor
 Captures metrics from PyTorch training loops using hooks.
 """
 
+import logging
 import time
+import collections
 from typing import List, Optional, Dict, Any
 import numpy as np
 import torch
 import torch.nn as nn
 
 from .types import MetricSnapshot, MonitoringConfig
+
+logger = logging.getLogger(__name__)
 
 
 class TrainingMonitor:
@@ -30,12 +34,13 @@ class TrainingMonitor:
         self.optimizer = optimizer
         
         # Metrics storage
-        self.metrics_buffer: List[MetricSnapshot] = []
+        self.metrics_buffer: collections.deque = collections.deque(maxlen=MonitoringConfig.MAX_METRICS_BUFFER)
         self.current_epoch = 0
         self.current_batch = 0
         
         # Gradient tracking
         self.grad_norms: List[float] = []
+        self.layer_grad_norms: Dict[str, float] = {}
         
         # Hook handles for cleanup
         self.hook_handles = []
@@ -48,10 +53,15 @@ class TrainingMonitor:
         
     def attach(self):
         """Attach hooks to the model for gradient monitoring."""
-        # Register backward hook for gradient capture
+        # Register backward hooks for per-parameter gradient norm capture
         for name, param in self.model.named_parameters():
             if param.requires_grad:
-                handle = param.register_hook(self._make_grad_hook(name))
+                # Use default argument pattern to capture name correctly in closure
+                def hook(grad, _name=name):
+                    # Store per-parameter gradient norm during backward pass
+                    self.layer_grad_norms[_name] = grad.norm(2).item()
+                
+                handle = param.register_hook(hook)
                 self.hook_handles.append(handle)
     
     def detach(self):
@@ -60,13 +70,9 @@ class TrainingMonitor:
             handle.remove()
         self.hook_handles.clear()
     
-    def _make_grad_hook(self, name: str):
-        """Create a gradient hook for a specific parameter."""
-        def hook(grad):
-            # Hook is called during backward pass
-            # We accumulate gradient info here
-            pass
-        return hook
+    def get_layer_grad_norms(self) -> Dict[str, float]:
+        """Get per-layer gradient norms from the most recent backward pass."""
+        return dict(self.layer_grad_norms)
     
     def log_batch(self, loss: float, val_loss: Optional[float] = None):
         """
@@ -103,10 +109,8 @@ class TrainingMonitor:
             val_loss=val_loss
         )
         
-        # Add to buffer (with size limit)
+        # Add to buffer (deque with maxlen handles overflow automatically)
         self.metrics_buffer.append(snapshot)
-        if len(self.metrics_buffer) > MonitoringConfig.MAX_METRICS_BUFFER:
-            self.metrics_buffer.pop(0)
         
         self.current_batch += 1
         self.batch_counter += 1
@@ -136,7 +140,7 @@ class TrainingMonitor:
     
     def get_metrics(self) -> List[MetricSnapshot]:
         """Get all collected metrics."""
-        return self.metrics_buffer.copy()
+        return list(self.metrics_buffer)
     
     def get_recent_metrics(self, window: int = 20) -> List[MetricSnapshot]:
         """
@@ -148,7 +152,7 @@ class TrainingMonitor:
         Returns:
             List of recent metric snapshots
         """
-        return self.metrics_buffer[-window:] if len(self.metrics_buffer) >= window else self.metrics_buffer.copy()
+        return self.metrics_buffer[-window:] if len(self.metrics_buffer) >= window else list(self.metrics_buffer)
     
     def get_moving_average_loss(self, window: int = 20) -> float:
         """Calculate moving average of loss."""
@@ -176,12 +180,23 @@ class TrainingMonitor:
         import math
         
         total_norm_sq = 0.0
+        any_grad_found = False
+        
         for param in self.model.parameters():
             if param.grad is not None:
+                any_grad_found = True
                 # Keep computation in tensor space for numerical stability
                 # Compute norm, then convert to float, then square
                 param_norm = param.grad.data.norm(2).item()
                 total_norm_sq += param_norm ** 2
+        
+        # If no gradients were found, emit debug message
+        if not any_grad_found:
+            logger.debug(
+                "No gradients found during grad_norm calculation; likely zero_grad() was called. "
+                "Returning 0.0. This may indicate the model hasn't accumulated gradients yet."
+            )
+            return 0.0
         
         # Handle edge case of all zero gradients
         if total_norm_sq == 0.0:
@@ -209,7 +224,14 @@ class TrainingMonitor:
         """
         all_params = []
         for param in self.model.parameters():
-            all_params.append(param.data.cpu().numpy().flatten())
+            try:
+                all_params.append(param.data.cpu().numpy().flatten())
+            except (RuntimeError, TypeError) as e:
+                logger.debug(
+                    f"Failed to convert parameter to numpy (likely non-copyable CUDA tensor). "
+                    f"Skipping this parameter: {e}"
+                )
+                continue
         
         if not all_params:
             return {'mean': 0.0, 'std': 0.0, 'max': 0.0}
@@ -237,8 +259,12 @@ class TrainingMonitor:
                            for m in self.model.modules())
         has_layernorm = any(isinstance(m, nn.LayerNorm) for m in self.model.modules())
         
-        # Count layers
-        num_layers = len(list(self.model.modules()))
+        # Check for saturating activations
+        has_sigmoid = any(isinstance(m, nn.Sigmoid) for m in self.model.modules())
+        has_tanh = any(isinstance(m, nn.Tanh) for m in self.model.modules())
+        
+        # Count only leaf modules (layers with no children)
+        num_layers = sum(1 for m in self.model.modules() if not list(m.children()))
         
         return {
             'total_params': total_params,
@@ -246,6 +272,9 @@ class TrainingMonitor:
             'has_batchnorm': has_batchnorm,
             'has_layernorm': has_layernorm,
             'has_normalization': has_batchnorm or has_layernorm,
+            'has_sigmoid': has_sigmoid,
+            'has_tanh': has_tanh,
+            'has_saturating_activations': has_sigmoid or has_tanh,
             'num_layers': num_layers,
             'model_type': type(self.model).__name__
         }
@@ -277,6 +306,7 @@ class TrainingMonitor:
     def reset(self):
         """Reset all collected metrics."""
         self.metrics_buffer.clear()
+        self.layer_grad_norms.clear()
         self.current_epoch = 0
         self.current_batch = 0
         self.initial_loss = None
