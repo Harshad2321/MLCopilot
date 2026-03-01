@@ -16,7 +16,7 @@ MLCopilot is an intelligent monitoring system that integrates into PyTorch train
 
 ### Detects:
 - ⚠️ Exploding gradients
-- 📉 Vanishing gradients
+- � Vanishing gradients
 - 💥 Loss divergence
 - 📊 Loss plateau
 - ❌ NaN/Inf losses
