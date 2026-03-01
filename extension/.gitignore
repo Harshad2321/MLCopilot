@@ -1,0 +1,4 @@
+# MLCopilot Extension
+node_modules/
+out/
+*.vsix
