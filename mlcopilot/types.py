@@ -169,28 +169,95 @@ class Recommendation:
 class DetectionThresholds:
     """Thresholds for anomaly detection."""
     
-    # Gradient thresholds
+    # Class-level defaults (unchanged, for backwards compatibility)
     EXPLODING_GRAD_THRESHOLD = 10.0
     VANISHING_GRAD_THRESHOLD = 1e-7
     GRAD_MULTIPLIER_THRESHOLD = 3.0  # For comparing to moving average
-    
-    # Loss thresholds
     LOSS_DIVERGENCE_MULTIPLIER = 2.0  # 2x initial loss
     LOSS_PLATEAU_THRESHOLD = 0.001  # Minimum change
     LOSS_PLATEAU_WINDOW = 50  # Number of batches
-    
-    # Learning rate thresholds
     HIGH_LR_THRESHOLD = 0.1
     LOW_LR_THRESHOLD = 1e-6
-    
-    # Overfitting thresholds
     OVERFITTING_GAP_THRESHOLD = 0.5  # train_loss + 0.5 < val_loss
     OVERFITTING_RATIO_THRESHOLD = 1.5  # val_loss / train_loss > 1.5
-    
-    # General
     CONFIDENCE_HIGH = 0.8
     CONFIDENCE_MEDIUM = 0.5
     CONFIDENCE_LOW = 0.3
+    
+    def __init__(self,
+                 *,
+                 exploding_grad_threshold: Optional[float] = None,
+                 vanishing_grad_threshold: Optional[float] = None,
+                 grad_multiplier_threshold: Optional[float] = None,
+                 loss_divergence_multiplier: Optional[float] = None,
+                 loss_plateau_threshold: Optional[float] = None,
+                 loss_plateau_window: Optional[int] = None,
+                 high_lr_threshold: Optional[float] = None,
+                 low_lr_threshold: Optional[float] = None,
+                 overfitting_gap_threshold: Optional[float] = None,
+                 overfitting_ratio_threshold: Optional[float] = None,
+                 confidence_high: Optional[float] = None,
+                 confidence_medium: Optional[float] = None,
+                 confidence_low: Optional[float] = None):
+        """
+        Initialize DetectionThresholds with optional per-instance overrides.
+        
+        Args:
+            All parameters are optional and default to class-level constants.
+            Pass keyword-only arguments to override specific thresholds.
+        """
+        self.exploding_grad_threshold = (
+            exploding_grad_threshold if exploding_grad_threshold is not None 
+            else self.EXPLODING_GRAD_THRESHOLD
+        )
+        self.vanishing_grad_threshold = (
+            vanishing_grad_threshold if vanishing_grad_threshold is not None 
+            else self.VANISHING_GRAD_THRESHOLD
+        )
+        self.grad_multiplier_threshold = (
+            grad_multiplier_threshold if grad_multiplier_threshold is not None 
+            else self.GRAD_MULTIPLIER_THRESHOLD
+        )
+        self.loss_divergence_multiplier = (
+            loss_divergence_multiplier if loss_divergence_multiplier is not None 
+            else self.LOSS_DIVERGENCE_MULTIPLIER
+        )
+        self.loss_plateau_threshold = (
+            loss_plateau_threshold if loss_plateau_threshold is not None 
+            else self.LOSS_PLATEAU_THRESHOLD
+        )
+        self.loss_plateau_window = (
+            loss_plateau_window if loss_plateau_window is not None 
+            else self.LOSS_PLATEAU_WINDOW
+        )
+        self.high_lr_threshold = (
+            high_lr_threshold if high_lr_threshold is not None 
+            else self.HIGH_LR_THRESHOLD
+        )
+        self.low_lr_threshold = (
+            low_lr_threshold if low_lr_threshold is not None 
+            else self.LOW_LR_THRESHOLD
+        )
+        self.overfitting_gap_threshold = (
+            overfitting_gap_threshold if overfitting_gap_threshold is not None 
+            else self.OVERFITTING_GAP_THRESHOLD
+        )
+        self.overfitting_ratio_threshold = (
+            overfitting_ratio_threshold if overfitting_ratio_threshold is not None 
+            else self.OVERFITTING_RATIO_THRESHOLD
+        )
+        self.confidence_high = (
+            confidence_high if confidence_high is not None 
+            else self.CONFIDENCE_HIGH
+        )
+        self.confidence_medium = (
+            confidence_medium if confidence_medium is not None 
+            else self.CONFIDENCE_MEDIUM
+        )
+        self.confidence_low = (
+            confidence_low if confidence_low is not None 
+            else self.CONFIDENCE_LOW
+        )
 
 
 class MonitoringConfig:

@@ -19,8 +19,9 @@ class FailureDetector:
     Runs multiple detectors and returns all detected issues.
     """
     
-    def __init__(self):
+    def __init__(self, thresholds: Optional[DetectionThresholds] = None):
         self.initial_loss: Optional[float] = None
+        self.thresholds = thresholds or DetectionThresholds()
     
     def detect_all(self, metrics: List[MetricSnapshot]) -> List[DetectionResult]:
         """
@@ -52,7 +53,7 @@ class FailureDetector:
         ]
         
         for detector in detectors:
-            result = detector(metrics, self.initial_loss)
+            result = detector(metrics, self.initial_loss, self.thresholds)
             if result:
                 results.append(result)
         
@@ -107,13 +108,15 @@ def _linear_regression(x: List[float], y: List[float]) -> Tuple[float, float]:
     return slope, r_squared
 
 def detect_nan_loss(metrics: List[MetricSnapshot], 
-                    initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                    initial_loss: Optional[float] = None,
+                    thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
     Detect NaN or Inf in loss values.
     
     Args:
         metrics: List of metric snapshots
         initial_loss: Initial loss value (unused here)
+        thresholds: Detection thresholds (unused here)
     
     Returns:
         DetectionResult if NaN/Inf detected, None otherwise
@@ -142,7 +145,8 @@ def detect_nan_loss(metrics: List[MetricSnapshot],
 
 
 def detect_exploding_gradients(metrics: List[MetricSnapshot],
-                               initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                               initial_loss: Optional[float] = None,
+                               thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
     Detect exploding gradients.
     
@@ -153,10 +157,13 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
     Args:
         metrics: List of metric snapshots
         initial_loss: Initial loss value (unused here)
+        thresholds: Detection thresholds
     
     Returns:
         DetectionResult if exploding gradients detected, None otherwise
     """
+    if thresholds is None:
+        thresholds = DetectionThresholds()
     eps_log = 1e-8
     if len(metrics) < 5:
         return None
@@ -168,10 +175,10 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
     avg_grad_norm = np.mean([m.grad_norm for m in recent[:-1]]) if len(recent) > 1 else current.grad_norm
     
     # Check absolute threshold
-    exceeds_threshold = current.grad_norm > DetectionThresholds.EXPLODING_GRAD_THRESHOLD
+    exceeds_threshold = current.grad_norm > thresholds.exploding_grad_threshold
     
     # Check relative to moving average
-    relative_threshold = avg_grad_norm * DetectionThresholds.GRAD_MULTIPLIER_THRESHOLD
+    relative_threshold = avg_grad_norm * thresholds.grad_multiplier_threshold
     exceeds_average = avg_grad_norm > 0 and current.grad_norm > relative_threshold
 
     # ---------------------------------------------------------------------
@@ -227,7 +234,7 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
 
     # Existing confidence rules
     absolute_confidence = (
-        calculate_confidence(current.grad_norm, DetectionThresholds.EXPLODING_GRAD_THRESHOLD, inverse=False)
+        calculate_confidence(current.grad_norm, thresholds.exploding_grad_threshold, inverse=False)
         if exceeds_threshold else 0.0
     )
     relative_confidence = (
@@ -278,7 +285,7 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
             metric_snapshot=current,
             raw_values={
                 'grad_norm': current.grad_norm,
-                'threshold': DetectionThresholds.EXPLODING_GRAD_THRESHOLD,
+                'threshold': thresholds.exploding_grad_threshold,
                 'moving_average': avg_grad_norm,
                 'relative_threshold': relative_threshold,
                 'average_log_growth': average_log_growth,
@@ -293,32 +300,121 @@ def detect_exploding_gradients(metrics: List[MetricSnapshot],
 
 
 def detect_vanishing_gradients(metrics: List[MetricSnapshot],
-                               initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                               initial_loss: Optional[float] = None,
+                               thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
     Detect vanishing gradients.
     
-    Criteria: Gradient norm falls below minimum threshold
+    Criteria:
+    1. Gradient norm falls below minimum threshold (absolute snapshot check)
+    2. Gradient norm decaying at a fast rate (log-decay trend check)
+    3. Gradient norm declining via log-linear regression (regression trend check)
     
     Args:
         metrics: List of metric snapshots
         initial_loss: Initial loss value (unused here)
+        thresholds: Detection thresholds
     
     Returns:
         DetectionResult if vanishing gradients detected, None otherwise
     """
+    if thresholds is None:
+        thresholds = DetectionThresholds()
+    
     if len(metrics) < 5:
         return None
     
     current = metrics[-1]
+    eps_log = 1e-8
     
-    # Check if gradient norm is extremely small
-    if current.grad_norm < DetectionThresholds.VANISHING_GRAD_THRESHOLD:
-        # Calculate confidence (inverse - smaller value = higher confidence)
-        confidence = calculate_confidence(
+    # Check absolute snapshot threshold
+    absolute_triggered = current.grad_norm < thresholds.vanishing_grad_threshold
+    absolute_confidence = (
+        calculate_confidence(
             current.grad_norm,
-            DetectionThresholds.VANISHING_GRAD_THRESHOLD,
+            thresholds.vanishing_grad_threshold,
             inverse=True
+        ) if absolute_triggered else 0.0
+    )
+    
+    # ---------------------------------------------------------------------
+    # A) Log-Decay Rate Detection (mirrors log-growth for exploding)
+    # r_i = log(g_i + eps) - log(g_{i-1} + eps)
+    # Trigger if average of last 5 r_i < -0.1 AND at least 4/5 negative
+    # ---------------------------------------------------------------------
+    average_log_decay = 0.0
+    log_decay_negative_count = 0
+    log_decay_triggered = False
+    log_decay_confidence = 0.0
+    
+    if len(metrics) >= 10:
+        grad_window_decay = [m.grad_norm for m in metrics[-10:]]
+        log_decay_rates: List[float] = []
+        
+        for idx in range(1, len(grad_window_decay)):
+            prev_g = grad_window_decay[idx - 1]
+            curr_g = grad_window_decay[idx]
+            r_i = math.log(curr_g + eps_log) - math.log(prev_g + eps_log)
+            log_decay_rates.append(r_i)
+        
+        # Last 5 r_i values
+        if len(log_decay_rates) >= 5:
+            last_5_rates = log_decay_rates[-5:]
+            average_log_decay = float(np.mean(last_5_rates))
+            log_decay_negative_count = sum(1 for r in last_5_rates if r < 0)
+            
+            # Trigger: average < -0.1 AND at least 4 out of 5 negative
+            log_decay_triggered = average_log_decay < -0.1 and log_decay_negative_count >= 4
+            log_decay_confidence = (
+                min(1.0, abs(average_log_decay) / 0.3) if log_decay_triggered else 0.0
+            )
+    
+    # ---------------------------------------------------------------------
+    # B) Log-Linear Regression Detection
+    # x = [0..9], y = log(grad_norm + eps)
+    # Trigger if slope < -0.1 AND r_squared > 0.6
+    # ---------------------------------------------------------------------
+    reg_slope, reg_r_squared = 0.0, 0.0
+    reg_triggered = False
+    reg_confidence = 0.0
+    
+    if len(metrics) >= 10:
+        grad_window_reg = [m.grad_norm for m in metrics[-10:]]
+        x_reg = [float(i) for i in range(len(grad_window_reg))]
+        y_reg = [math.log(g + eps_log) for g in grad_window_reg]
+        
+        # Minimum variance check
+        y_variance = float(np.var(y_reg))
+        if y_variance >= 1e-10:
+            reg_slope, reg_r_squared = _linear_regression(x_reg, y_reg)
+            reg_triggered = reg_slope < -0.1 and reg_r_squared > 0.6
+            reg_confidence = min(1.0, abs(reg_slope) / 0.3) if reg_triggered else 0.0
+    
+    # Combine all signals
+    vanishing_detected = (
+        absolute_triggered
+        or log_decay_triggered
+        or reg_triggered
+    )
+    
+    if vanishing_detected:
+        confidence = max(
+            absolute_confidence,
+            log_decay_confidence,
+            reg_confidence,
         )
+        # Confidence floor: if trend-based triggered, ensure >= 0.05
+        if (log_decay_triggered or reg_triggered) and confidence < 0.05:
+            confidence = 0.05
+        confidence = max(0.0, min(1.0, confidence))
+        
+        trigger_reasons: List[str] = []
+        if absolute_triggered:
+            trigger_reasons.append("absolute_threshold")
+        if log_decay_triggered:
+            trigger_reasons.append("log_decay")
+        if reg_triggered:
+            trigger_reasons.append("log_linear_regression")
         
         severity = determine_severity(confidence)
         
@@ -328,11 +424,18 @@ def detect_vanishing_gradients(metrics: List[MetricSnapshot],
             severity=severity,
             detected_at_epoch=current.epoch,
             detected_at_batch=current.batch,
-            description=f"Gradient norm ({current.grad_norm:.2e}) below threshold ({DetectionThresholds.VANISHING_GRAD_THRESHOLD:.2e})",
+            description=(
+                f"Vanishing-gradient pattern detected (triggers: {', '.join(trigger_reasons)})"
+            ),
             metric_snapshot=current,
             raw_values={
                 'grad_norm': current.grad_norm,
-                'threshold': DetectionThresholds.VANISHING_GRAD_THRESHOLD
+                'threshold': thresholds.vanishing_grad_threshold,
+                'log_decay_triggered': float(log_decay_triggered),
+                'average_log_decay': average_log_decay,
+                'regression_slope': reg_slope,
+                'regression_r_squared': reg_r_squared,
+                'regression_triggered': float(reg_triggered)
             }
         )
     
@@ -340,7 +443,8 @@ def detect_vanishing_gradients(metrics: List[MetricSnapshot],
 
 
 def detect_loss_divergence(metrics: List[MetricSnapshot],
-                           initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                           initial_loss: Optional[float] = None,
+                           thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
     Detect loss divergence (loss increasing dramatically).
     
@@ -349,10 +453,14 @@ def detect_loss_divergence(metrics: List[MetricSnapshot],
     Args:
         metrics: List of metric snapshots
         initial_loss: Initial loss value for comparison
+        thresholds: Detection thresholds
     
     Returns:
         DetectionResult if loss divergence detected, None otherwise
     """
+    if thresholds is None:
+        thresholds = DetectionThresholds()
+    
     if not metrics or initial_loss is None or len(metrics) < 5:
         return None
     
@@ -363,11 +471,11 @@ def detect_loss_divergence(metrics: List[MetricSnapshot],
         return None
     
     # Existing check: divergence from initial loss
-    threshold = initial_loss * DetectionThresholds.LOSS_DIVERGENCE_MULTIPLIER
+    threshold = initial_loss * thresholds.loss_divergence_multiplier
     old_logic_triggered = current.loss > threshold and current.loss > initial_loss
     ratio = current.loss / initial_loss if initial_loss > 1e-8 else float('inf')
     old_confidence = (
-        min(1.0, (ratio - DetectionThresholds.LOSS_DIVERGENCE_MULTIPLIER) / 5.0 + 0.5)
+        min(1.0, (ratio - thresholds.loss_divergence_multiplier) / 5.0 + 0.5)
         if old_logic_triggered else 0.0
     )
 
@@ -466,20 +574,27 @@ def detect_loss_divergence(metrics: List[MetricSnapshot],
 
 
 def detect_loss_plateau(metrics: List[MetricSnapshot],
-                       initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                       initial_loss: Optional[float] = None,
+                       thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
-    Detect loss plateau (loss not changing).
+    Detect loss plateau (loss not changing) and distinguish between converged vs stuck.
     
     Criteria: Loss changes very little over extended window
+    - Converged: flat loss at low value (< 10% of initial or < 0.01 absolute)
+    - Stuck: flat loss at high value
     
     Args:
         metrics: List of metric snapshots
-        initial_loss: Initial loss value (unused here)
+        initial_loss: Initial loss value for convergence check
+        thresholds: Detection thresholds
     
     Returns:
         DetectionResult if plateau detected, None otherwise
     """
-    window = DetectionThresholds.LOSS_PLATEAU_WINDOW
+    if thresholds is None:
+        thresholds = DetectionThresholds()
+    
+    window = thresholds.loss_plateau_window
     
     if len(metrics) < window:
         return None
@@ -502,6 +617,7 @@ def detect_loss_plateau(metrics: List[MetricSnapshot],
     confidence = 0.0
     cv = 0.0
     rr = 0.0
+    is_converged = False
 
     # Relative tolerance logic
     if mean_loss > 1e-6:
@@ -519,7 +635,19 @@ def detect_loss_plateau(metrics: List[MetricSnapshot],
     confidence = max(0.0, min(1.0, confidence))
 
     if plateau_triggered:
+        # Determine if converged (low loss) or stuck (high loss)
+        convergence_threshold_relative = initial_loss * 0.1 if initial_loss is not None else float('inf')
+        convergence_threshold_absolute = 0.01
+        
+        is_converged = mean_loss < convergence_threshold_relative or mean_loss < convergence_threshold_absolute
+        
+        # Only emit anomaly if stuck (high-loss plateau); converged low-loss plateaus are healthy
+        if is_converged:
+            return None
+        
         severity = determine_severity(confidence)
+        
+        description = f"Loss is stuck at high value — plateau over {window} batches"
         
         return DetectionResult(
             anomaly_type=AnomalyType.LOSS_PLATEAU,
@@ -527,7 +655,7 @@ def detect_loss_plateau(metrics: List[MetricSnapshot],
             severity=severity,
             detected_at_epoch=current.epoch,
             detected_at_batch=current.batch,
-            description=f"Loss plateaued over {window} batches (mean: {mean_loss:.6f}, std: {std_loss:.6f})",
+            description=description,
             metric_snapshot=current,
             raw_values={
                 'mean_loss': mean_loss,
@@ -543,7 +671,8 @@ def detect_loss_plateau(metrics: List[MetricSnapshot],
 
 
 def detect_overfitting(metrics: List[MetricSnapshot],
-                      initial_loss: Optional[float] = None) -> Optional[DetectionResult]:
+                      initial_loss: Optional[float] = None,
+                      thresholds: Optional[DetectionThresholds] = None) -> Optional[DetectionResult]:
     """
     Detect overfitting (train/validation gap).
     
@@ -552,10 +681,14 @@ def detect_overfitting(metrics: List[MetricSnapshot],
     Args:
         metrics: List of metric snapshots
         initial_loss: Initial loss value (unused here)
+        thresholds: Detection thresholds
     
     Returns:
         DetectionResult if overfitting detected, None otherwise
     """
+    if thresholds is None:
+        thresholds = DetectionThresholds()
+    
     if len(metrics) < 10:
         return None
     
@@ -585,11 +718,24 @@ def detect_overfitting(metrics: List[MetricSnapshot],
     # Check ratio
     ratio = val_loss / train_loss if train_loss > 0 else float('inf')
     
-    if gap > DetectionThresholds.OVERFITTING_GAP_THRESHOLD or \
-       ratio > DetectionThresholds.OVERFITTING_RATIO_THRESHOLD:
+    if gap > thresholds.overfitting_gap_threshold or \
+       ratio > thresholds.overfitting_ratio_threshold:
         
-        # Confidence based on gap size
-        confidence = min(1.0, gap / 1.0 + 0.3)
+        # Fixed confidence formula based on threshold exceedance:
+        # Confidence = 0.0 at gap == threshold, scales to 1.0 at gap == threshold + 2.0
+        if gap > thresholds.overfitting_gap_threshold:
+            exceedance = gap - thresholds.overfitting_gap_threshold
+            gap_confidence = min(1.0, exceedance / 2.0)
+        else:
+            gap_confidence = 0.0
+        
+        # Also compute from ratio using standard confidence function
+        ratio_confidence = calculate_confidence(ratio, thresholds.overfitting_ratio_threshold)
+        
+        # Take max of both, clamp to [0, 1]
+        confidence = max(gap_confidence, ratio_confidence)
+        confidence = max(0.0, min(1.0, confidence))
+        
         severity = determine_severity(confidence)
         
         return DetectionResult(
@@ -604,7 +750,9 @@ def detect_overfitting(metrics: List[MetricSnapshot],
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'gap': gap,
-                'ratio': ratio
+                'ratio': ratio,
+                'gap_threshold': thresholds.overfitting_gap_threshold,
+                'ratio_threshold': thresholds.overfitting_ratio_threshold
             }
         )
     
