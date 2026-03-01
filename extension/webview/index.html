@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MLCopilot – Real-Time ML Training Monitor</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- ========== TOP BAR ========== -->
+    <header id="topbar">
+        <div class="topbar-left">
+            <h1>⚡ MLCopilot</h1>
+            <span class="subtitle">Real-Time ML Training Monitor</span>
+        </div>
+        <div class="topbar-right">
+            <span id="statusBadge" class="badge badge-idle">IDLE</span>
+        </div>
+    </header>
+
+    <!-- ========== MAIN GRID ========== -->
+    <main id="grid">
+        <!-- LEFT: Charts -->
+        <section class="panel charts-panel">
+            <div class="chart-container">
+                <h3>Loss Curve</h3>
+                <canvas id="lossChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Gradient Norm</h3>
+                <canvas id="gradChart"></canvas>
+            </div>
+        </section>
+
+        <!-- RIGHT: Info Panels -->
+        <section class="panel info-panel">
+            <!-- Current Metrics -->
+            <div class="card" id="metricsCard">
+                <h3>Current Metrics</h3>
+                <div class="metrics-grid">
+                    <div class="metric-item">
+                        <span class="metric-label">Epoch</span>
+                        <span class="metric-value" id="mEpoch">—</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">Batch</span>
+                        <span class="metric-value" id="mBatch">—</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">Loss</span>
+                        <span class="metric-value" id="mLoss">—</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">Grad Norm</span>
+                        <span class="metric-value" id="mGrad">—</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">Learning Rate</span>
+                        <span class="metric-value" id="mLR">—</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">Global Step</span>
+                        <span class="metric-value" id="mStep">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detection Panel -->
+            <div class="card" id="detectionCard">
+                <h3>🔍 Detection</h3>
+                <div id="detectionContent" class="placeholder-text">No issues detected</div>
+            </div>
+
+            <!-- Recommendations Panel -->
+            <div class="card" id="recsCard">
+                <h3>💡 Recommendations</h3>
+                <div id="recsContent" class="placeholder-text">Waiting for analysis…</div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ========== BOTTOM CONTROLS ========== -->
+    <footer id="controls">
+        <button id="btnStart" class="btn btn-primary" onclick="startTraining()">▶ Start Training</button>
+        <button id="btnStop" class="btn btn-danger" onclick="stopTraining()" disabled>⏹ Stop Training</button>
+        <div class="lr-control">
+            <label for="lrInput">Learning Rate</label>
+            <input id="lrInput" type="text" value="0.01" />
+            <button class="btn btn-secondary" onclick="applyLR()">Apply</button>
+        </div>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

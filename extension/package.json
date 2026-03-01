@@ -70,9 +70,10 @@
         }
     },
     "scripts": {
-        "vscode:prepublish": "npm run compile",
+        "vscode:prepublish": "npm run copy-assets && npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
+        "copy-assets": "xcopy /E /I /Y ..\\python-backend python-backend\\ && xcopy /E /I /Y ..\\webview webview\\ && xcopy /E /I /Y ..\\mlcopilot mlcopilot\\",
         "package": "vsce package"
     },
     "devDependencies": {

@@ -7,6 +7,7 @@ const PORT = 5050;
 const URL = `http://localhost:${PORT}`;
 let serverProcess: cp.ChildProcess | null = null;
 let outputChannel: vscode.OutputChannel;
+let extensionPath: string;
 
 // ────────────────────────────────────────────────────────────────
 // Activation
@@ -14,6 +15,7 @@ let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("MLCopilot");
+    extensionPath = context.extensionUri.fsPath;
 
     // Register commands
     context.subscriptions.push(
@@ -47,18 +49,12 @@ async function startMonitor() {
         return;
     }
 
-    const workspaceRoot = getWorkspaceRoot();
-    if (!workspaceRoot) {
-        vscode.window.showErrorMessage("No workspace folder open.");
-        return;
-    }
-
-    const serverScript = path.join(workspaceRoot, "python-backend", "server.py");
+    const serverScript = path.join(extensionPath, "python-backend", "server.py");
     outputChannel.appendLine(`Starting server: python ${serverScript}`);
     outputChannel.show(true);
 
     serverProcess = cp.spawn("python", [serverScript], {
-        cwd: workspaceRoot,
+        cwd: extensionPath,
         env: { ...process.env },
     });
 
