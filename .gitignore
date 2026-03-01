@@ -30,9 +30,9 @@ ENV/
 *.pth
 *.pt
 
-# Node / Extension
-extension/node_modules/
-extension/out/
+# Node / Extension (if using)
+node_modules/
+out/
 *.vsix
 
 # IDEs
@@ -57,3 +57,4 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+

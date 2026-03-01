@@ -1,26 +1,266 @@
-# MLCopilot 🤖
+# ⚡ MLCopilot – Real-Time ML Training Monitor
 
-**Real-Time ML Training Failure Detection & Fix Recommendation Engine**
+> **Detect training failures. Get root cause analysis. Fix your model — live.**
 
-MLCopilot is an intelligent monitoring system that integrates into PyTorch training loops to detect training instability early, performs root cause analysis, and generates actionable ML-specific recommendations.
+MLCopilot is a real-time monitoring system for PyTorch training that detects anomalies (exploding gradients, loss divergence, overfitting), identifies root causes, and recommends fixes with code examples—all from a beautiful web dashboard.
 
 ---
 
 ## 🎯 Features
 
-- **🔍 Real-Time Monitoring**: Non-invasive hooks into PyTorch training
-- **🚨 Intelligent Detection**: Rule-based anomaly detection for common training failures
-- **🧠 Root Cause Analysis**: Expert-system reasoning to identify why failures occur
-- **💡 Actionable Recommendations**: Specific fixes with code examples
-- **📊 Beautiful CLI Output**: Clear, colorful terminal reports
+| Feature | What It Does |
+|---------|-------------|
+| **Live Metrics** | Real-time loss & gradient norm charts |
+| **Anomaly Detection** | Detects exploding/vanishing gradients, loss divergence, overfitting, NaN losses |
+| **Root Cause Analysis** | Identifies why training failed (hyperparameter, architecture, optimization) |
+| **Fix Recommendations** | Actionable suggestions with Python code examples |
+| **Live LR Control** | Adjust learning rate mid-training from the UI |
+| **Status Badges** | Healthy / Warning / Critical at a glance |
+| **Dark Web UI** | Clean, minimal dashboard — no React bloat |
 
-### Detects:
-- ⚠️ Exploding gradients
-- 📉 Vanishing gradients
-- 💥 Loss divergence
-- 📊 Loss plateau
-- ❌ NaN/Inf losses
-- 📈 Overfitting (train/val gap)
+---
+
+## 🚀 Quick Start
+
+### 1. Install dependencies
+```bash
+pip install fastapi uvicorn[standard] websockets torch numpy
+```
+
+### 2. Run the backend server
+```bash
+python python-backend/server.py
+```
+
+### 3. Open dashboard
+Dashboard auto-opens at **http://localhost:5050**
+
+### 4. Start training
+Click **[▶ Start Training]** to run a demo. Watch metrics stream live.
+
+---
+
+## 📁 Project Structure
+
+```
+MLCopilot/
+├── python-backend/
+│   ├── server.py              # FastAPI backend with WebSocket
+│   └── requirements.txt        # Dependencies
+├── webview/
+│   ├── index.html             # Dashboard HTML
+│   ├── style.css              # Dark theme CSS
+│   └── app.js                 # WebSocket client + Chart.js
+└── mlcopilot/
+    ├── types.py               # Data structures
+    ├── detection.py           # Anomaly detection rules
+    ├── analysis.py            # Root cause inference
+    ├── recommendation.py       # Fix suggestions
+    ├── monitoring.py          # PyTorch metric collection
+    ├── cli.py                 # CLI reporting
+    └── __init__.py            # Package exports
+```
+
+---
+
+## 🔧 How It Works
+
+### Backend Flow
+1. **Server** spawns FastAPI on port 5050
+2. **Training thread** runs demo MLP with synthetic dataset
+3. **Every batch**:
+   - Compute metrics (loss, grad norm, learning rate)
+   - Run detection (FailureDetector)
+   - If issue: analyze root cause + generate recommendations
+   - Stream via WebSocket to dashboard (80ms updates)
+
+### Dashboard Flow
+1. **Connect** via WebSocket to `/ws`
+2. **Display** live charts (Chart.js)
+3. **Highlight** anomaly points in red
+4. **Show** detection panels + recommendations
+5. **Control** learning rate from UI
+
+### Detection Rules
+- **Exploding Gradients**: `grad_norm > 10.0` or rapid growth
+- **Vanishing Gradients**: `grad_norm < 1e-7`
+- **Loss Divergence**: `loss > 2x initial loss`
+- **Loss Plateau**: `loss unchanged for 50+ batches`
+- **NaN Loss**: `math.isnan(loss) or math.isinf(loss)`
+- **Overfitting**: `val_loss > train_loss * 1.5`
+
+---
+
+## 💻 Integration with Your Training
+
+Import the core detection + analysis into your code:
+
+```python
+import torch.nn as nn
+import torch.optim as optim
+from mlcopilot import FailureDetector, RootCauseAnalyzer, RecommendationEngine
+from mlcopilot import MetricSnapshot
+
+# Your model and optimizer
+model = nn.Linear(10, 2)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# Initialize detectors
+detector = FailureDetector()
+analyzer = RootCauseAnalyzer()
+recommender = RecommendationEngine()
+
+# Training loop
+for epoch in range(10):
+    for batch in range(5):
+        # Your training step
+        loss = torch.rand(1).item()
+        
+        # Get grad norm
+        grad_norm = sum(p.grad.norm(2).item()**2 for p in model.parameters() if p.grad)**0.5
+        
+        # Create metric snapshot
+        snapshot = MetricSnapshot(
+            epoch=epoch, batch=batch, loss=loss,
+            grad_norm=grad_norm, learning_rate=0.001,
+            param_mean=0.0, param_std=0.1, param_max=0.5,
+            timestamp=time.time()
+        )
+        
+        # Store metrics
+        metrics.append(snapshot)
+        
+        # Check for issues every 10 batches
+        if batch % 10 == 0 and len(metrics) >= 5:
+            detections = detector.detect_all(metrics)
+            if detections:
+                det = detections[0]
+                diagnosis = analyzer.analyze(det, {}, {})
+                recs = recommender.generate(diagnosis)
+                print(f"Issue: {det.description}")
+                for rec in recs:
+                    print(f"  → {rec.action}: {rec.reasoning}")
+```
+
+---
+
+## 🔬 Detectable Issues & Examples
+
+### Exploding Gradients
+- **Sign**: Grad norm suddenly spikes 10x+
+- **Cause**: Learning rate too high, poor initialization
+- **Fix**: Reduce LR, add gradient clipping, use batch norm
+
+### Vanishing Gradients
+- **Sign**: Grad norm drops to near-zero
+- **Cause**: Network too deep, saturating activations (sigmoid/tanh)
+- **Fix**: Use ReLU, add residual connections, better init
+
+### Loss Divergence
+- **Sign**: Loss increases instead of decreasing
+- **Cause**: LR too high, bad batch, numerical instability
+- **Fix**: Reduce LR, check data, normalize inputs
+
+### Loss Plateau
+- **Sign**: Loss unchanged for many batches
+- **Cause**: Bad hyperparameters, stuck in local minimum
+- **Fix**: Increase LR decay, use different optimizer
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────┐
+│  Browser: http://localhost:5050         │
+│  ├─ Dashboard (HTML/CSS/JS)             │
+│  ├─ Live Charts (Chart.js)              │
+│  └─ WebSocket client                    │
+└──────────────────┬──────────────────────┘
+                   │ WebSocket /ws
+                   ↓
+┌─────────────────────────────────────────┐
+│  FastAPI Server (python-backend/server.py)
+│  ├─ POST /start       → spawn training  │
+│  ├─ POST /stop        → stop training   │
+│  ├─ POST /set_lr      → update LR       │
+│  ├─ GET  /status      → current state   │
+│  └─ WS   /ws          → stream metrics  │
+└──────────────────┬──────────────────────┘
+                   │
+                   ↓
+      ┌────────────────────────┐
+      │  Training Thread       │
+      │  ├─ Demo MLP model     │
+      │  ├─ Synthetic data     │
+      │  └─ Metrics logging    │
+      └────────────────────────┘
+                   │
+                   ↓
+      ┌────────────────────────┐
+      │  MLCopilot Core        │
+      │  ├─ Detection          │
+      │  ├─ Analysis           │
+      │  └─ Recommendations    │
+      └────────────────────────┘
+```
+
+---
+
+## 📊 Tech Stack
+
+| Layer | Tech |
+|-------|------|
+| **Backend** | Python, FastAPI, WebSocket, PyTorch |
+| **Frontend** | Vanilla HTML/CSS/JS, Chart.js (no frameworks) |
+| **ML Core** | PyTorch, NumPy, Rule-based detection/analysis |
+| **Extension** | TypeScript, VS Code API *(optional)* |
+
+---
+
+## 🎓 Files Matter
+
+| File | Purpose |
+|------|---------|
+| `detection.py` | Rule-based anomaly detection (~300 lines) |
+| `analysis.py` | Root cause reasoning (~200 lines) |
+| `recommendation.py` | Fix suggestions with code (~200 lines) |
+| `types.py` | Data structures (MetricSnapshot, Diagnosis, etc.) |
+| `monitoring.py` | PyTorch integration (hooks, metric collection) |
+| `server.py` | FastAPI backend + board serving (~240 lines) |
+| `app.js` | WebSocket client + Chart.js UI (~200 lines) |
+
+**Total production code: ~1500 lines** — clean, minimal, powerful.
+
+---
+
+## 🚦 Demo Scenarios
+
+### Scenario 1: Normal Training
+- Model converges smoothly
+- No alerts
+- Dashboard shows steady loss decrease
+
+### Scenario 2: High Learning Rate (will detect)
+- Gradient norms spike after a few batches
+- **CRITICAL** badge
+- Recommendations: Reduce LR by 10x
+
+### Scenario 3: Deep Network (will detect)
+- Vanishing gradients after many layers
+- **MEDIUM** warning
+- Recommendations: Add residual connections, use ReLU
+
+---
+
+## 📝 License
+
+MIT
+
+---
+
+**MLCopilot Labs** — For the hackathon. Built clean. Build fast. 🚀
+
 
 ---
 
